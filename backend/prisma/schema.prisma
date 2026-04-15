@@ -1,0 +1,59 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Institution {
+  id     Int    @id @default(autoincrement())
+  name   String @unique
+  users  User[]
+  events Event[]
+}
+
+model User {
+  id            Int          @id @default(autoincrement())
+  name          String
+  email         String       @unique
+  passwordHash  String       @map("password")
+  role          String       @default("USER")
+  phone         String?
+  institutionId Int?
+  institution   Institution? @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+  registrations UserEvent[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @default(now()) @updatedAt
+}
+
+model Event {
+  id            Int          @id @default(autoincrement())
+  title         String
+  startAt       DateTime
+  endAt         DateTime
+  institutionId Int?
+  isPublic      Boolean      @default(true)
+  status        String       @default("DRAFT")
+  content       String
+  institution   Institution? @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+  participants  UserEvent[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @default(now()) @updatedAt
+
+  @@index([institutionId])
+  @@index([startAt])
+  @@index([status])
+}
+
+model UserEvent {
+  userId       Int
+  eventId      Int
+  registeredAt DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event        Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@id([userId, eventId])
+  @@index([eventId])
+}
