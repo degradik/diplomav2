@@ -5,10 +5,11 @@ import {
   isAdmin,
   isLoggedIn,
 } from "./api";
-import LoginPage from "./pages/LoginPage.vue";
-import RegisterPage from "./pages/RegisterPage.vue";
+import LoginPage from "./pages/auth/LoginPage.vue";
+import RegisterPage from "./pages/auth/RegisterPage.vue";
 import ProfilePage from "./pages/ProfilePage.vue";
 import EventsPage from "./pages/EventsPage.vue";
+import EventDetailsPage from "./pages/EventDetailsPage.vue";
 import AdminLoginPage from "./pages/AdminLoginPage.vue";
 import AdminEventsPage from "./pages/AdminEventsPage.vue";
 import AdminInstitutionsPage from "./pages/AdminInstitutionsPage.vue";
@@ -39,6 +40,11 @@ const router = createRouter({
     {
       path: "/events",
       component: EventsPage,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/events/:id",
+      component: EventDetailsPage,
       meta: { requiresAuth: true },
     },
     {

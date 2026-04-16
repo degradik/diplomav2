@@ -1,7 +1,8 @@
 <script setup>
 import { computed } from "vue";
-import { RouterLink, useRoute, useRouter } from "vue-router";
+import { useRouter } from "vue-router";
 import { clearAuthSession, getStoredUser } from "../api";
+import AppShell from "./layout/AppShell.vue";
 
 defineProps({
   title: {
@@ -10,10 +11,13 @@ defineProps({
   },
 });
 
-const route = useRoute();
 const router = useRouter();
 const me = computed(() => getStoredUser());
 const userInitial = computed(() => (me.value?.fullName || "U").slice(0, 1).toUpperCase());
+const navItems = [
+  { to: "/events", label: "Мероприятия" },
+  { to: "/profile", label: "Профиль" },
+];
 
 function logout() {
   clearAuthSession();
@@ -22,34 +26,15 @@ function logout() {
 </script>
 
 <template>
-  <div class="dashboard">
-    <aside class="sidebar">
-      <div class="logo">AURE<span>STA</span></div>
-      <p class="sidebar-title">МЕНЮ</p>
-      <nav class="menu-list">
-        <RouterLink class="menu-item" :class="{ active: route.path === '/events' }" to="/events">
-          Мероприятия
-        </RouterLink>
-        <RouterLink class="menu-item" :class="{ active: route.path === '/profile' }" to="/profile">
-          Профиль
-        </RouterLink>
-      </nav>
-      <button type="button" class="menu-item sidebar-logout" @click="logout">Выход</button>
-    </aside>
-
-    <div class="workspace">
-      <header class="topbar">
-        <h1>{{ title }}</h1>
-        <div class="topbar-right">
-          <div class="user-chip">
-            <div class="avatar">{{ userInitial }}</div>
-            <span>{{ me?.fullName || "Пользователь" }}</span>
-          </div>
-        </div>
-      </header>
-      <main class="content-panel">
-        <slot />
-      </main>
-    </div>
-  </div>
+  <AppShell
+    :title="title"
+    sidebar-title="Пользовательская зона"
+    :user-name="me?.fullName || 'Пользователь'"
+    :user-avatar-url="me?.avatarUrl || ''"
+    :user-initial="userInitial"
+    :nav-items="navItems"
+    @logout="logout"
+  >
+    <slot />
+  </AppShell>
 </template>

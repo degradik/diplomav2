@@ -1,9 +1,11 @@
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
+const sanitizeHtml = require("sanitize-html");
 const { z } = require("zod");
 const { PrismaClient } = require("@prisma/client");
 
@@ -19,6 +21,47 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || "http://localhost:5173,http://
   .filter(Boolean);
 
 const PHONE_PATTERN = /^\+?[0-9()\-\s]{7,20}$/;
+const HTTP_URL_PATTERN = /^https?:\/\//i;
+const DATA_IMAGE_PATTERN = /^data:image\//i;
+const MAX_DATA_IMAGE_LENGTH = 900000;
+const MAX_PROFILE_IMAGE_DATA_LENGTH = 700000;
+const MAX_EVENT_CONTENT_HTML_LENGTH = 60000;
+const MAX_EVENT_CONTENT_TEXT_LENGTH = 20000;
+const MAX_EVENT_TITLE_LENGTH = 180;
+const READ_LIST_LIMIT = 500;
+const WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
+
+const optionalImageUrlSchema = z
+  .string()
+  .trim()
+  .refine(
+    (value) => {
+      if (value === "") return true;
+      if (DATA_IMAGE_PATTERN.test(value)) {
+        return value.length <= MAX_DATA_IMAGE_LENGTH;
+      }
+      return value.length <= 2048 && HTTP_URL_PATTERN.test(value);
+    },
+    "Укажите корректную ссылку на изображение."
+  )
+  .nullable()
+  .optional();
+
+const optionalAvatarUrlSchema = z
+  .string()
+  .trim()
+  .refine(
+    (value) => {
+      if (value === "") return true;
+      if (DATA_IMAGE_PATTERN.test(value)) {
+        return value.length <= MAX_PROFILE_IMAGE_DATA_LENGTH;
+      }
+      return value.length <= 2048 && HTTP_URL_PATTERN.test(value);
+    },
+    "Укажите корректную ссылку на аватар."
+  )
+  .nullable()
+  .optional();
 
 class AppError extends Error {
   constructor(statusCode, message, details = null) {
@@ -36,6 +79,29 @@ const authLimiter = rateLimit({
   message: { message: "Слишком много попыток авторизации. Попробуйте позже." },
 });
 
+const globalApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 180,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Слишком много запросов. Попробуйте через минуту." },
+});
+
+const writeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => !WRITE_METHODS.has(req.method),
+  message: { message: "Слишком много операций записи. Повторите позже." },
+});
+
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+  })
+);
+
 app.use(
   cors({
     origin(origin, callback) {
@@ -48,8 +114,10 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
 app.use(morgan("dev"));
+app.use("/api", globalApiLimiter);
+app.use("/api", writeLimiter);
 
 function asInt(value) {
   const parsed = Number(value);
@@ -74,6 +142,7 @@ function sanitizeUser(user) {
     id: user.id,
     fullName: user.name,
     email: user.email,
+    avatarUrl: user.avatarUrl,
     phone: user.phone,
     role: user.role,
     institutionId: user.institutionId,
@@ -93,6 +162,75 @@ function parseValidation(schema, payload) {
     throw new AppError(400, "Ошибка валидации.", errors);
   }
   return result.data;
+}
+
+function normalizeImageUrl(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function getPositiveInt(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return fallback;
+  if (parsed < min) return min;
+  if (parsed > max) return max;
+  return parsed;
+}
+
+function sanitizeEventContent(value) {
+  const raw = String(value || "");
+  if (raw.length > MAX_EVENT_CONTENT_HTML_LENGTH) {
+    throw new AppError(400, "Контент мероприятия слишком большой.");
+  }
+
+  const cleaned = sanitizeHtml(raw, {
+    allowedTags: [
+      "h2",
+      "h3",
+      "h4",
+      "p",
+      "blockquote",
+      "ul",
+      "ol",
+      "li",
+      "strong",
+      "em",
+      "u",
+      "a",
+      "table",
+      "thead",
+      "tbody",
+      "tr",
+      "th",
+      "td",
+      "br",
+    ],
+    allowedAttributes: {
+      a: ["href", "title", "target", "rel"],
+      th: ["colspan", "rowspan"],
+      td: ["colspan", "rowspan"],
+    },
+    allowedSchemes: ["http", "https", "mailto"],
+    transformTags: {
+      a: sanitizeHtml.simpleTransform("a", {
+        rel: "noopener noreferrer nofollow",
+        target: "_blank",
+      }),
+    },
+  }).trim();
+
+  const plainText = sanitizeHtml(cleaned, { allowedTags: [], allowedAttributes: {} })
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!plainText) {
+    throw new AppError(400, "Контент мероприятия не должен быть пустым.");
+  }
+  if (plainText.length > MAX_EVENT_CONTENT_TEXT_LENGTH) {
+    throw new AppError(400, "Текст контента мероприятия слишком большой.");
+  }
+
+  return cleaned;
 }
 
 async function getAuthUser(req) {
@@ -157,6 +295,7 @@ function serializeEventForUser(event, userId, userInstitutionId) {
   return {
     id: event.id,
     title: event.title,
+    imageUrl: event.imageUrl,
     content: event.content,
     startAt: event.startAt,
     endAt: event.endAt,
@@ -172,64 +311,79 @@ function serializeEventForUser(event, userId, userInstitutionId) {
   };
 }
 
-const registerSchema = z.object({
-  fullName: z.string().trim().min(5, "ФИО должно содержать минимум 5 символов.").max(120),
-  phone: z
-    .string()
-    .trim()
-    .min(1, "Телефон обязателен.")
-    .refine((value) => PHONE_PATTERN.test(value), "Некорректный формат телефона."),
-  email: z.string().trim().email("Некорректный email."),
-  password: z.string().min(8, "Пароль должен быть минимум 8 символов."),
-  institutionId: z.number().int().positive(),
-});
+const registerSchema = z
+  .object({
+    fullName: z.string().trim().min(5, "ФИО должно содержать минимум 5 символов.").max(120),
+    phone: z
+      .string()
+      .trim()
+      .refine((value) => value === "" || PHONE_PATTERN.test(value), "Некорректный формат телефона.")
+      .optional(),
+    email: z.string().trim().email("Некорректный email.").max(180),
+    password: z.string().min(8, "Пароль должен быть минимум 8 символов.").max(120),
+    institutionId: z.number().int().positive().optional(),
+  })
+  .strict();
 
-const loginSchema = z.object({
-  email: z.string().trim().email("Некорректный email."),
-  password: z.string().min(1, "Пароль обязателен."),
-});
+const loginSchema = z
+  .object({
+    email: z.string().trim().email("Некорректный email.").max(180),
+    password: z.string().min(1, "Пароль обязателен.").max(120),
+  })
+  .strict();
 
-const mePatchSchema = z.object({
-  phone: z
-    .string()
-    .trim()
-    .min(1, "Телефон обязателен.")
-    .refine((value) => PHONE_PATTERN.test(value), "Некорректный формат телефона.")
-    .optional(),
-  institutionId: z.number().int().positive().optional(),
-});
+const mePatchSchema = z
+  .object({
+    phone: z
+      .string()
+      .trim()
+      .min(1, "Телефон обязателен.")
+      .refine((value) => PHONE_PATTERN.test(value), "Некорректный формат телефона.")
+      .optional(),
+    avatarUrl: optionalAvatarUrlSchema,
+    institutionId: z.number().int().positive().nullable().optional(),
+  })
+  .strict();
 
-const adminInstitutionCreateSchema = z.object({
-  name: z.string().trim().min(2).max(180),
-});
+const adminInstitutionCreateSchema = z
+  .object({
+    name: z.string().trim().min(2).max(180),
+  })
+  .strict();
 
-const adminInstitutionPatchSchema = z.object({
-  name: z.string().trim().min(2).max(180),
-});
+const adminInstitutionPatchSchema = z
+  .object({
+    name: z.string().trim().min(2).max(180),
+  })
+  .strict();
 
-const adminUserCreateSchema = z.object({
-  fullName: z.string().trim().min(5).max(120),
-  phone: z
-    .string()
-    .trim()
-    .min(1)
-    .refine((value) => PHONE_PATTERN.test(value), "Некорректный формат телефона."),
-  email: z.string().trim().email(),
-  password: z.string().min(8),
-  role: z.enum(["USER", "ADMIN"]).default("USER"),
-  institutionId: z.number().int().positive().nullable().optional(),
-});
+const adminUserCreateSchema = z
+  .object({
+    fullName: z.string().trim().min(5).max(120),
+    phone: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => PHONE_PATTERN.test(value), "Некорректный формат телефона."),
+    email: z.string().trim().email().max(180),
+    password: z.string().min(8).max(120),
+    role: z.enum(["USER", "ADMIN"]).default("USER"),
+    institutionId: z.number().int().positive().nullable().optional(),
+  })
+  .strict();
 
 const adminEventCreateSchema = z
   .object({
-    title: z.string().trim().min(1, "Название обязательно."),
-    content: z.string().trim().min(1, "Описание обязательно."),
+    title: z.string().trim().min(1, "Название обязательно.").max(MAX_EVENT_TITLE_LENGTH),
+    content: z.string().trim().min(1, "Описание обязательно.").max(MAX_EVENT_CONTENT_HTML_LENGTH),
+    imageUrl: optionalImageUrlSchema,
     startAt: z.string().datetime(),
     endAt: z.string().datetime(),
     institutionId: z.number().int().positive().nullable().optional(),
     isPublic: z.boolean(),
     status: z.enum(["DRAFT", "PUBLISHED", "ARCHIVED"]).default("DRAFT"),
   })
+  .strict()
   .refine((data) => new Date(data.startAt).getTime() < new Date(data.endAt).getTime(), {
     message: "Дата начала должна быть раньше даты окончания.",
     path: ["startAt"],
@@ -237,14 +391,16 @@ const adminEventCreateSchema = z
 
 const adminEventPatchSchema = z
   .object({
-    title: z.string().trim().min(1).optional(),
-    content: z.string().trim().min(1).optional(),
+    title: z.string().trim().min(1).max(MAX_EVENT_TITLE_LENGTH).optional(),
+    content: z.string().trim().min(1).max(MAX_EVENT_CONTENT_HTML_LENGTH).optional(),
+    imageUrl: optionalImageUrlSchema,
     startAt: z.string().datetime().optional(),
     endAt: z.string().datetime().optional(),
     institutionId: z.number().int().positive().nullable().optional(),
     isPublic: z.boolean().optional(),
     status: z.enum(["DRAFT", "PUBLISHED", "ARCHIVED"]).optional(),
   })
+  .strict()
   .refine(
     (data) => {
       if (!data.startAt || !data.endAt) return true;
@@ -263,17 +419,19 @@ app.get("/api/health", (_req, res) => {
 app.post("/api/auth/register", authLimiter, async (req, res, next) => {
   try {
     const payload = parseValidation(registerSchema, req.body);
-    await ensureInstitutionExists(payload.institutionId);
+    if (payload.institutionId !== undefined) {
+      await ensureInstitutionExists(payload.institutionId);
+    }
 
     const passwordHash = await bcrypt.hash(payload.password, 10);
     const user = await prisma.user.create({
       data: {
         name: payload.fullName,
-        phone: payload.phone,
+        phone: payload.phone || null,
         email: payload.email.toLowerCase(),
         passwordHash,
         role: "USER",
-        institutionId: payload.institutionId,
+        institutionId: payload.institutionId ?? null,
       },
       include: { institution: true },
     });
@@ -347,6 +505,7 @@ app.patch("/api/users/me", authRequired, async (req, res, next) => {
       where: { id: me.id },
       data: {
         phone: payload.phone === undefined ? me.phone : payload.phone,
+        avatarUrl: payload.avatarUrl === undefined ? me.avatarUrl : normalizeImageUrl(payload.avatarUrl),
         institutionId: payload.institutionId === undefined ? me.institutionId : payload.institutionId,
       },
       include: { institution: true },
@@ -361,6 +520,7 @@ app.patch("/api/users/me", authRequired, async (req, res, next) => {
 app.get("/api/institutions", async (_req, res, next) => {
   try {
     const institutions = await prisma.institution.findMany({
+      take: READ_LIST_LIMIT,
       orderBy: { name: "asc" },
       include: {
         _count: {
@@ -380,12 +540,22 @@ app.get("/api/events", authRequired, async (req, res, next) => {
     if (!me) throw new AppError(404, "Пользователь не найден.");
 
     const filterType = String(req.query.filter || "all");
+    if (!["all", "upcoming", "past", "mine"].includes(filterType)) {
+      throw new AppError(400, "Некорректный фильтр мероприятий.");
+    }
+
     const now = new Date();
+    const institutionAccessWhere =
+      me.institutionId === null || me.institutionId === undefined
+        ? [{ isPublic: true }]
+        : [{ isPublic: true }, { institutionId: me.institutionId }];
 
     const events = await prisma.event.findMany({
       where: {
         status: "PUBLISHED",
+        OR: institutionAccessWhere,
       },
+      take: READ_LIST_LIMIT,
       include: {
         institution: true,
         participants: {
@@ -399,7 +569,9 @@ app.get("/api/events", authRequired, async (req, res, next) => {
       orderBy: { startAt: "asc" },
     });
 
-    let serialized = events.map((event) => serializeEventForUser(event, me.id, me.institutionId));
+    let serialized = events
+      .map((event) => serializeEventForUser(event, me.id, me.institutionId))
+      .filter((event) => event.isAccessible);
     if (filterType === "upcoming") {
       serialized = serialized.filter((event) => event.startAt > now);
     } else if (filterType === "past") {
@@ -435,6 +607,10 @@ app.get("/api/events/:id", authRequired, async (req, res, next) => {
       },
     });
     if (!event) throw new AppError(404, "Мероприятие не найдено.");
+    const hasAccess =
+      event.status === "PUBLISHED" &&
+      (event.isPublic || (me.institutionId !== null && me.institutionId !== undefined && event.institutionId === me.institutionId));
+    if (!hasAccess) throw new AppError(404, "Мероприятие не найдено.");
 
     res.json(serializeEventForUser(event, me.id, me.institutionId));
   } catch (error) {
@@ -530,6 +706,7 @@ app.get("/api/admin/dashboard", authRequired, adminOnly, async (_req, res, next)
 app.get("/api/admin/users", authRequired, adminOnly, async (req, res, next) => {
   try {
     const query = String(req.query.q || "").trim().toLowerCase();
+    const limit = getPositiveInt(req.query.limit, 200, 1, READ_LIST_LIMIT);
     const users = await prisma.user.findMany({
       where: query
         ? {
@@ -543,6 +720,7 @@ app.get("/api/admin/users", authRequired, adminOnly, async (req, res, next) => {
         institution: true,
         _count: { select: { registrations: true } },
       },
+      take: limit,
       orderBy: { createdAt: "desc" },
     });
     res.json(users.map((item) => sanitizeUser(item)));
@@ -628,7 +806,7 @@ app.delete("/api/admin/institutions/:id", authRequired, adminOnly, async (req, r
     if (usersCount > 0 || eventsCount > 0) {
       throw new AppError(
         409,
-        "Нельзя удалить УЗ с зависимостями. Сначала удалите или переназначьте пользователей/мероприятия."
+        "Нельзя удалить учебное заведение с зависимостями. Сначала удалите или переназначьте пользователей/мероприятия."
       );
     }
 
@@ -642,9 +820,14 @@ app.delete("/api/admin/institutions/:id", authRequired, adminOnly, async (req, r
 app.get("/api/admin/events", authRequired, adminOnly, async (req, res, next) => {
   try {
     const status = String(req.query.status || "").trim();
+    if (status && !["DRAFT", "PUBLISHED", "ARCHIVED"].includes(status)) {
+      throw new AppError(400, "Некорректный статус мероприятия.");
+    }
+    const limit = getPositiveInt(req.query.limit, 200, 1, READ_LIST_LIMIT);
     const where = status ? { status } : undefined;
     const events = await prisma.event.findMany({
       where,
+      take: limit,
       include: {
         institution: true,
         _count: {
@@ -663,7 +846,7 @@ app.post("/api/admin/events", authRequired, adminOnly, async (req, res, next) =>
   try {
     const payload = parseValidation(adminEventCreateSchema, req.body);
     if (!payload.isPublic && !payload.institutionId) {
-      throw new AppError(400, "Для непубличного мероприятия нужно указать УЗ.");
+      throw new AppError(400, "Для непубличного мероприятия нужно указать учебное заведение.");
     }
     if (payload.institutionId !== null && payload.institutionId !== undefined) {
       await ensureInstitutionExists(payload.institutionId);
@@ -672,7 +855,8 @@ app.post("/api/admin/events", authRequired, adminOnly, async (req, res, next) =>
     const created = await prisma.event.create({
       data: {
         title: payload.title,
-        content: payload.content,
+        imageUrl: normalizeImageUrl(payload.imageUrl),
+        content: sanitizeEventContent(payload.content),
         startAt: new Date(payload.startAt),
         endAt: new Date(payload.endAt),
         institutionId: payload.institutionId ?? null,
@@ -708,7 +892,8 @@ app.patch("/api/admin/events/:id", authRequired, adminOnly, async (req, res, nex
 
     const data = {
       title: payload.title ?? event.title,
-      content: payload.content ?? event.content,
+      imageUrl: payload.imageUrl === undefined ? event.imageUrl : normalizeImageUrl(payload.imageUrl),
+      content: payload.content === undefined ? event.content : sanitizeEventContent(payload.content),
       startAt,
       endAt,
       institutionId: payload.institutionId === undefined ? event.institutionId : payload.institutionId,
@@ -717,7 +902,7 @@ app.patch("/api/admin/events/:id", authRequired, adminOnly, async (req, res, nex
     };
 
     if (!data.isPublic && !data.institutionId) {
-      throw new AppError(400, "Для непубличного мероприятия нужно указать УЗ.");
+      throw new AppError(400, "Для непубличного мероприятия нужно указать учебное заведение.");
     }
 
     const updated = await prisma.event.update({
@@ -762,6 +947,7 @@ app.get("/api/admin/events/:id/participants", authRequired, adminOnly, async (re
 
     const q = String(req.query.q || "").trim().toLowerCase();
     const institutionId = req.query.institutionId ? asInt(req.query.institutionId) : null;
+    const limit = getPositiveInt(req.query.limit, 300, 1, READ_LIST_LIMIT);
 
     const participants = await prisma.userEvent.findMany({
       where: {
@@ -783,6 +969,7 @@ app.get("/api/admin/events/:id/participants", authRequired, adminOnly, async (re
           include: { institution: true },
         },
       },
+      take: limit,
       orderBy: { registeredAt: "asc" },
     });
 

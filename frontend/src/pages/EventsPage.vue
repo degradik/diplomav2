@@ -1,7 +1,9 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import UserShell from "../components/UserShell.vue";
 import ToastMessage from "../components/ToastMessage.vue";
+import UiSegmentTabs from "../components/ui/UiSegmentTabs.vue";
+import UserEventCard from "../components/events/UserEventCard.vue";
 import { api, refreshMe } from "../api";
 
 const loading = ref(false);
@@ -9,11 +11,21 @@ const actionLoading = ref({});
 const error = ref("");
 const success = ref("");
 const filter = ref("all");
+const search = ref("");
 const events = ref([]);
 
-function formatDate(value) {
-  return new Date(value).toLocaleString("ru-RU");
-}
+const filterItems = [
+  { value: "all", label: "Все" },
+  { value: "upcoming", label: "Предстоящие" },
+  { value: "past", label: "Завершенные" },
+  { value: "mine", label: "Мои регистрации" },
+];
+
+const filteredEvents = computed(() => {
+  const query = search.value.trim().toLowerCase();
+  if (!query) return events.value;
+  return events.value.filter((event) => event.title.toLowerCase().includes(query));
+});
 
 async function loadEvents() {
   loading.value = true;
@@ -68,61 +80,30 @@ onMounted(loadEvents);
   <UserShell title="Мероприятия">
     <ToastMessage :error="error" :success="success" />
 
-    <div class="section-tabs">
-      <button type="button" class="seg-btn" :class="{ active: filter === 'all' }" @click="filter = 'all'; loadEvents()">
-        Все
-      </button>
-      <button
-        type="button"
-        class="seg-btn"
-        :class="{ active: filter === 'upcoming' }"
-        @click="filter = 'upcoming'; loadEvents()"
-      >
-        Предстоящие
-      </button>
-      <button type="button" class="seg-btn" :class="{ active: filter === 'past' }" @click="filter = 'past'; loadEvents()">
-        Прошедшие
-      </button>
-      <button type="button" class="seg-btn" :class="{ active: filter === 'mine' }" @click="filter = 'mine'; loadEvents()">
-        Мои
-      </button>
-    </div>
+    <section class="events-toolbar">
+      <UiSegmentTabs v-model="filter" :items="filterItems" @change="loadEvents" />
+      <label class="events-search">
+        <span>Поиск по названию</span>
+        <input v-model.trim="search" type="text" placeholder="Введите название мероприятия" />
+      </label>
+    </section>
 
-    <section v-if="loading" class="block"><p>Загрузка мероприятий...</p></section>
+    <section v-if="loading" class="block">
+      <p>Загружаем актуальные мероприятия...</p>
+    </section>
     <section v-else class="block">
-      <div v-if="events.length === 0" class="empty-state">Список мероприятий пуст.</div>
+      <div v-if="filteredEvents.length === 0" class="empty-state">
+        Сейчас нет мероприятий по выбранным условиям.
+      </div>
       <div v-else class="events-grid">
-        <article v-for="item in events" :key="item.id" class="event-card">
-          <div class="event-top">
-            <span class="badge">{{ item.isPublic ? "Публичное" : "Для УЗ" }}</span>
-            <strong>{{ item.title }}</strong>
-          </div>
-          <p>{{ formatDate(item.startAt) }} - {{ formatDate(item.endAt) }}</p>
-          <p>Статус: {{ item.status }}</p>
-          <p>УЗ: {{ item.institution?.name || "Общее мероприятие" }}</p>
-          <p>Участников: {{ item.participantsCount }}</p>
-          <p class="event-content" v-html="item.content"></p>
-          <p v-if="!item.isAccessible" class="field-error">Событие недоступно для вашего профиля.</p>
-          <p v-else-if="item.isPast" class="field-error">Запись закрыта: мероприятие уже началось.</p>
-          <button
-            v-if="!item.isRegistered"
-            type="button"
-            class="action-btn"
-            :disabled="!item.canRegister || actionLoading[item.id]"
-            @click="registerToEvent(item.id)"
-          >
-            {{ actionLoading[item.id] ? "Записываем..." : "Записаться" }}
-          </button>
-          <button
-            v-else
-            type="button"
-            class="action-btn action-btn-danger"
-            :disabled="actionLoading[item.id]"
-            @click="cancelRegistration(item.id)"
-          >
-            {{ actionLoading[item.id] ? "Отменяем..." : "Отменить запись" }}
-          </button>
-        </article>
+        <UserEventCard
+          v-for="item in filteredEvents"
+          :key="item.id"
+          :event="item"
+          :loading="Boolean(actionLoading[item.id])"
+          @register="registerToEvent"
+          @cancel="cancelRegistration"
+        />
       </div>
     </section>
   </UserShell>

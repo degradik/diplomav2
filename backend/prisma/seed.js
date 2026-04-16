@@ -77,6 +77,7 @@ async function main() {
   const eventData = [
     {
       title: "Хакатон по веб-разработке",
+      imageUrl: "https://images.unsplash.com/photo-1550751827-4bd374c3f58b?auto=format&fit=crop&w=1200&q=80",
       startAt: new Date("2026-05-12T10:00:00.000Z"),
       endAt: new Date("2026-05-12T18:00:00.000Z"),
       institutionId: bmstu.id,
@@ -86,6 +87,7 @@ async function main() {
     },
     {
       title: "Открытая IT-конференция",
+      imageUrl: "https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&w=1200&q=80",
       startAt: new Date("2026-06-01T08:00:00.000Z"),
       endAt: new Date("2026-06-01T17:00:00.000Z"),
       institutionId: null,
@@ -95,6 +97,7 @@ async function main() {
     },
     {
       title: "Архивный семинар",
+      imageUrl: "https://images.unsplash.com/photo-1517048676732-d65bc937f952?auto=format&fit=crop&w=1200&q=80",
       startAt: new Date("2025-03-10T08:00:00.000Z"),
       endAt: new Date("2025-03-10T12:00:00.000Z"),
       institutionId: msu.id,

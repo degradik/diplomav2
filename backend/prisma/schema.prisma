@@ -20,6 +20,7 @@ model User {
   email         String       @unique
   passwordHash  String       @map("password")
   role          String       @default("USER")
+  avatarUrl     String?
   phone         String?
   institutionId Int?
   institution   Institution? @relation(fields: [institutionId], references: [id], onDelete: SetNull)
@@ -31,6 +32,7 @@ model User {
 model Event {
   id            Int          @id @default(autoincrement())
   title         String
+  imageUrl      String?
   startAt       DateTime
   endAt         DateTime
   institutionId Int?

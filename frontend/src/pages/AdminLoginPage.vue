@@ -35,7 +35,7 @@ async function submit() {
   <div class="auth-page">
     <section class="auth-card">
       <h1>Вход в админку</h1>
-      <p>Управление мероприятиями, УЗ и участниками.</p>
+          <p>Управление мероприятиями, учебными заведениями и участниками.</p>
       <ToastMessage :error="error" />
       <form class="form-grid" @submit.prevent="submit">
         <label>
